@@ -1,0 +1,4 @@
+data_file: data/longmemeval_oracle.json
+question_ids: []                 # e.g., ["Q_0001","Q_0123"]
+retrievers_config: configs/retrievers.yaml
+output_dir: outputs
