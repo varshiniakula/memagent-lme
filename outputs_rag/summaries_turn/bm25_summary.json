@@ -1,0 +1,9 @@
+{
+  "retriever": "bm25",
+  "granularity": "turn",
+  "topk": 20,
+  "questions": 2,
+  "answered_pct": 100.0,
+  "is_correct_pct": 50.0,
+  "mean_f1": 0.33333333333333326
+}
