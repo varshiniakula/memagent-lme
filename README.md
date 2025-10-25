@@ -113,18 +113,6 @@ Current pipeline evaluates **Categories 1 & 2** (approachable via RAG).
 
 ---
 
-## 📊 How to Interpret Results
-
-| Retriever         | Best for                  | Reason                            |
-| ----------------- | ------------------------- | --------------------------------- |
-| **BM25 / TF-IDF** | Short factual Qs          | Keyword overlap dominates         |
-| **FAISS / KNN**   | Paraphrased & semantic Qs | Vector embeddings capture meaning |
-| **Ensemble**      | Mixed cases               | Combines lexical + semantic       |
-| **SVM**           | Reasoning Qs              | Learns from contextual embeddings |
-| **Time-weighted** | Temporal Qs               | Prioritizes recent turns          |
-
----
-
 ## ⚙️ Tools
 
 | Tool                          | Path                                            | Function |
