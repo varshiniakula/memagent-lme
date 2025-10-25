@@ -1,7 +1,8 @@
 """
 dataloader_lme.py (simple & tolerant)
 - Accepts LongMemEval canonical list OR {"data": [...]}
-- Tolerates text fields: text | content | message | utterance
+- Tolerates text keys: text | content | message | utterance
+- Keeps any non-empty text (even punctuation-only)
 - Auto-fills dia_id if missing (T{conv_index}:{turn_index})
 """
 
@@ -10,8 +11,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Union
 from langchain_core.documents import Document
 
-
-TextKeys = ("text", "content", "message", "utterance")
+_TEXT_KEYS = ("text", "content", "message", "utterance")
 
 
 @dataclass
@@ -52,9 +52,10 @@ class LMEDataLoader:
 
     @staticmethod
     def _extract_text(turn: Dict) -> str:
-        for k in TextKeys:
-            if k in turn and isinstance(turn[k], str):
-                return turn[k].strip()
+        for k in _TEXT_KEYS:
+            v = turn.get(k)
+            if isinstance(v, str):
+                return v.strip()
         return ""
 
     def load_data(
@@ -87,8 +88,8 @@ class LMEDataLoader:
             ti = 0
             for t in turns:
                 text = self._extract_text(t)
-                # Skip empty/near-empty turns (no letters or digits)
-                if not any(ch.isalnum() for ch in text):
+                # Keep any non-empty string (even punctuation-only)
+                if not text:
                     continue
                 ti += 1
                 dia_id = t.get("dia_id") or t.get("id") or f"T{ci}:{ti}"
@@ -100,7 +101,7 @@ class LMEDataLoader:
             for qa in conv.get("qa", []):
                 self.qa_pairs.append(QAPair(
                     sample_id=sid,
-                    question=qa.get("question", "") or "",
+                    question=(qa.get("question") or "").strip(),
                     answer=qa.get("answer"),
                     evidence=qa.get("evidence", []) or [],
                     category=qa.get("category")
