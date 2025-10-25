@@ -1,9 +1,0 @@
-{
-  "retriever": "dense-all-MiniLM-L6-v2",
-  "granularity": "turn",
-  "topk": 20,
-  "questions": 2,
-  "answered_pct": 100.0,
-  "is_correct_pct": 50.0,
-  "mean_f1": 0.4333333333333333
-}

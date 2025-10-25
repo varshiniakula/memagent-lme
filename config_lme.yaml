@@ -1,0 +1,15 @@
+data:
+  json_path: "data/longmemeval.json"
+  sample_ids: "all"
+  limit: 2
+
+retrievers:
+  top_k: 5
+  embedding_model: "sentence-transformers/all-mpnet-base-v2"
+
+evaluation:
+  question_limit: 5
+
+output:
+  results_dir: "./results_lme"
+  timestamp_format: "datetime"
