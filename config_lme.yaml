@@ -1,14 +1,14 @@
 data:
   json_path: "data/longmemeval.json"
   sample_ids: "all"
-  limit: 2
+  # or delete this line
 
 retrievers:
   top_k: 5
   embedding_model: "sentence-transformers/all-mpnet-base-v2"
 
 evaluation:
-  question_limit: 5
+   # or delete this line
 
 output:
   results_dir: "./results_lme"
