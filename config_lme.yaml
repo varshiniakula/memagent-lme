@@ -1,14 +1,14 @@
 data:
-  json_path: "data/longmemeval.json"
-  sample_ids: "all"
-  # or delete this line
+  json_path: "data/longmemeval_subset.json"
+  sample_ids: null
+  limit: null
+
 
 retrievers:
+  to_run: ["bm25","tfidf","faiss","svm","ensemble","time_weighted"]
   top_k: 5
   embedding_model: "sentence-transformers/all-mpnet-base-v2"
-
-evaluation:
-   # or delete this line
+  ensemble_weights: [0.75, 0.25]
 
 output:
   results_dir: "./results_lme"
