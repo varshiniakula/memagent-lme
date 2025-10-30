@@ -1,36 +1,38 @@
+# all_retrievers.py
 """
-retrievers_all.py
-All 8 retrievers for LongMemEval with graceful fallbacks.
+All retrievers for LongMemEval with graceful fallbacks.
 
-Retrievers:
+Lexical / vector / ML:
 1) bm25 (lexical)
 2) tfidf (lexical)
-3) knn (dense; alias of faiss)
-4) svm (ML)
-5) colbert (RAGatouille, optional)
-6) faiss (dense)
-7) time_weighted (recency proxy)
-8) nanopq (FAISS IVF+PQ, optional)
+3) faiss (dense)
+4) knn (alias of faiss)
+5) svm (ML)
+6) time_weighted (FAISS + recency proxy)
+7) nanopq (FAISS IVF+PQ, optional)
+8) colbert (RAGatouille, optional)
 
-Usage in your runner:
-    registry = RetrieverRegistry(documents, cfg)
-    results = registry.invoke("faiss", query, k=cfg["retrievers"]["top_k"])
+LLM-enabled retrievers (optional; require llm and extra deps):
+9)  multiquery                (LLM query expansion)
+10) contextual_compression    (LLM reranking/compression)
+11) self_query                (LLM metadata-aware filtering)
+
+Usage:
+    registry = RetrieverRegistry(documents, config, llm=llm)
+    docs = registry.invoke("faiss", query, k=5)
 """
 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
-import os
 import warnings
-
 import numpy as np
+
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever, TFIDFRetriever
 
-# -------------------------
-# Optional deps (import guarded)
-# -------------------------
+# Embeddings
 try:
     from langchain_huggingface import HuggingFaceEmbeddings as HFEmb
 except Exception:
@@ -39,15 +41,17 @@ except Exception:
     except Exception:
         HFEmb = None
 
-try:
-    from langchain_community.retrievers import SVMRetriever
-except Exception:
-    SVMRetriever = None
-
+# Vector store
 try:
     from langchain_community.vectorstores import FAISS
 except Exception:
     FAISS = None
+
+# SVM
+try:
+    from langchain_community.retrievers import SVMRetriever
+except Exception:
+    SVMRetriever = None
 
 # FAISS raw API (for NanoPQ)
 try:
@@ -61,10 +65,41 @@ try:
 except Exception:
     RAGPretrainedModel = None
 
+# LLM-based retrievers (guarded)
+# MultiQuery
+try:
+    from langchain.retrievers.multi_query import MultiQueryRetriever  # LC >= 0.2
+except Exception:
+    try:
+        from langchain_classic.retrievers import MultiQueryRetriever
+    except Exception:
+        MultiQueryRetriever = None
 
-# -------------------------
-# Small helpers
-# -------------------------
+# Contextual Compression
+try:
+    from langchain.retrievers import ContextualCompressionRetriever
+    from langchain.retrievers.document_compressors import LLMChainExtractor
+except Exception:
+    try:
+        from langchain_classic.retrievers import ContextualCompressionRetriever
+        from langchain_classic.retrievers.document_compressors import LLMChainExtractor
+    except Exception:
+        ContextualCompressionRetriever = None
+        LLMChainExtractor = None
+
+# Self-Query
+try:
+    from langchain.retrievers.self_query.base import SelfQueryRetriever
+    from langchain.chains.query_constructor.base import AttributeInfo
+except Exception:
+    try:
+        from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+        from langchain.chains.query_constructor.base import AttributeInfo
+    except Exception:
+        SelfQueryRetriever = None
+        AttributeInfo = None
+
+
 def _sanitize_docs(docs: List[Document]) -> List[Document]:
     out = []
     for d in docs or []:
@@ -91,23 +126,25 @@ def _as_array(vecs: List[List[float]]) -> np.ndarray:
 @dataclass
 class Built:
     name: str
-    impl: Any           # retriever or object
-    kind: str           # "keyword" | "vector" | "ml" | "colbert" | "pq" | "proxy"
+    impl: Any
+    kind: str  # "keyword" | "vector" | "ml" | "colbert" | "pq" | "proxy" | "llm"
 
 
 class RetrieverRegistry:
-    """
-    Central builder & invoker for all 8 retrievers.
-    - build_* methods construct and cache components
-    - invoke(name, query, k) returns List[Document]
-    """
-    def __init__(self, documents: List[Document], config: Dict[str, Any]):
+    def __init__(
+            self,
+            documents: List[Document],
+            config: Dict[str, Any],
+            llm: Optional[Any] = None,
+            session_docs: Optional[List[Document]] = None,
+    ):
         self.documents = _sanitize_docs(documents)
-        self.cfg = config.get("retrievers", {})
+        self.cfg = config.get("retrievers", {}) if isinstance(config, dict) else {}
         self.k_default = int(self.cfg.get("top_k", 5))
-        self.model_name = str(self.cfg.get("embedding_model", "sentence-transformers/all-mpnet-base-v2"))
+        self.model_name = str(self.cfg.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"))
+        self.llm = llm
+        self.session_docs = session_docs
 
-        # caches
         self._built: Dict[str, Built] = {}
         self._emb = None
         self._faiss_vs = None
@@ -116,19 +153,24 @@ class RetrieverRegistry:
         self._svm = None
         self._colbert = None
         self._nanopq = None
+        self._multiquery = None
+        self._compress = None
+        self._selfquery = None
 
         if not self.documents:
             warnings.warn("RetrieverRegistry initialized with 0 usable documents.")
 
-    # ---------------------
-    # Public API
-    # ---------------------
+    # ---------------- Public API ----------------
     def list_available(self) -> List[str]:
+        names = [
+            "bm25","tfidf","faiss","knn","svm","time_weighted","nanopq","colbert",
+            "multiquery","contextual_compression","self_query"
+        ]
         avail = []
-        for name in ["bm25","tfidf","faiss","knn","svm","colbert","time_weighted","nanopq"]:
+        for n in names:
             try:
-                if self._ensure(name):
-                    avail.append(name)
+                if self._ensure(n):
+                    avail.append(n)
             except Exception:
                 pass
         return sorted(set(avail))
@@ -138,66 +180,74 @@ class RetrieverRegistry:
         built = self._ensure(name)
         if not built:
             return []
+            # LLM-based (multiquery/contextual_compression/self_query)
+        if built.name in ("multiquery","contextual_compression","self_query"):
+            ret = built.impl
+            try:
+                docs = ret.invoke(query) if hasattr(ret, "invoke") else ret.get_relevant_documents(query)
+                return list(docs)[:k]
+            except Exception as e:
+                import warnings
+                warnings.warn(f"[{built.name}] LLM call failed: {e}. Skipping this retriever for this query.")
+                return []
 
         if built.name in ("bm25","tfidf","svm"):
             ret = built.impl
-            # langchain retrievers accept k via attribute
             if hasattr(ret, "k"):
                 ret.k = k
             return ret.invoke(query)
 
         if built.name in ("faiss","knn"):
-            vs = built.impl
-            return vs.similarity_search(query, k=k)
+            return built.impl.similarity_search(query, k=k)
 
         if built.name == "time_weighted":
-            # proxy: FAISS then reorder by dia_id (descending)
-            vs = self._ensure("faiss").impl if self._ensure("faiss") else None
-            if not vs:
+            vs_b = self._ensure("faiss")
+            if not vs_b:
                 return []
-            base = vs.similarity_search(query, k=max(k * 3, k))
+            base = vs_b.impl.similarity_search(query, k=max(k*3, k))
             return sorted(base, key=lambda d: d.metadata.get("dia_id",""), reverse=True)[:k]
 
         if built.name == "colbert":
             col = built.impl
             hits = col.search(query, k=k) or []
-            # RAGatouille returns a list of dicts with 'doc_id' or 'document'
             out: List[Document] = []
             for h in hits:
-                # Prefer doc_id mapping if present
                 idx = h.get("doc_id")
                 if idx is not None and 0 <= idx < len(self.documents):
                     out.append(self.documents[idx])
                 else:
-                    # fallback: return the text as a raw Document
                     txt = h.get("document") or h.get("content") or ""
                     out.append(Document(page_content=str(txt), metadata={"source":"colbert"}))
             return out[:k]
 
         if built.name == "nanopq":
-            npq = built.impl  # (index, xb matrix, id_map, emb)
-            return self._nanopq_search(npq, query, k)
+            return self._nanopq_search(built.impl, query, k)
+
+        if built.name in ("multiquery","contextual_compression","self_query"):
+            ret = built.impl
+            docs = ret.invoke(query) if hasattr(ret, "invoke") else ret.get_relevant_documents(query)
+            return list(docs)[:k]
 
         return []
 
-    # ---------------------
-    # Builders
-    # ---------------------
+    # ---------------- Builders ----------------
     def _ensure(self, name: str) -> Optional[Built]:
         name = name.lower()
         if name in self._built:
             return self._built[name]
 
-        # Dispatch
         builder = {
             "bm25": self._build_bm25,
             "tfidf": self._build_tfidf,
             "faiss": self._build_faiss,
-            "knn": self._build_faiss,            # alias
+            "knn": self._build_faiss,
             "svm": self._build_svm,
-            "colbert": self._build_colbert,
             "time_weighted": self._build_time_weighted,
             "nanopq": self._build_nanopq,
+            "colbert": self._build_colbert,
+            "multiquery": self._build_multiquery,
+            "contextual_compression": self._build_contextual_compression,
+            "self_query": self._build_self_query,
         }.get(name)
 
         if not builder:
@@ -255,53 +305,7 @@ class RetrieverRegistry:
             warnings.warn(f"[svm] build failed: {e}")
             return None
 
-    def _build_colbert(self) -> Optional[Built]:
-        cfg = self.cfg.get("colbert", {}) or {}
-        if not cfg.get("enabled", False):
-            return None
-        if RAGPretrainedModel is None:
-            warnings.warn("[colbert] RAGatouille not installed. `pip install ragatouille`")
-            return None
-        # Prepare collection as list of strings
-        texts = [(d.page_content or "") for d in self.documents]
-        # Build or load index
-        model_id = cfg.get("model", "colbert-ir/colbertv2.0")
-        index_dir = Path(cfg.get("index_dir", "indexes/colbert"))
-        index_dir.mkdir(parents=True, exist_ok=True)
-        overwrite = bool(cfg.get("overwrite", False))
-        try:
-            rag = RAGPretrainedModel.from_pretrained(model_id)
-            # Use a deterministic index name based on count + model
-            index_name = f"lme_{len(texts)}_{model_id.replace('/','_')}"
-            rag.index(
-                collection=texts,
-                index_name=index_name,
-                save_index_dir=str(index_dir),
-                overwrite=overwrite,
-            )
-            # Attach a tiny wrapper with .search(query,k) that returns doc_ids
-            class _ColWrap:
-                def __init__(self, rag, n):
-                    self.rag = rag
-                    self.n = n
-                def search(self, q, k=5):
-                    hits = self.rag.search(q, k=k)
-                    # Attach doc_id when missing
-                    out = []
-                    for h in hits:
-                        if "doc_id" not in h and "rank" in h:
-                            # fallback: trust order; unsafe but keeps flow
-                            h["doc_id"] = h.get("document_id", h.get("pid", h.get("rank", 0))) % self.n
-                        out.append(h)
-                    return out
-            self._colbert = _ColWrap(rag, len(texts))
-            return Built("colbert", self._colbert, "colbert")
-        except Exception as e:
-            warnings.warn(f"[colbert] build failed: {e}")
-            return None
-
     def _build_time_weighted(self) -> Optional[Built]:
-        # Proxy built on FAISS availability
         f = self._ensure("faiss")
         if not f:
             return None
@@ -328,14 +332,12 @@ class RetrieverRegistry:
 
             quantizer = faiss.IndexFlatL2(d)
             if opq_m and opq_m > 0:
-                # OPQ -> IVF,PQ
                 opq = faiss.OPQMatrix(d, opq_m)
                 index_ivfpq = faiss.IndexIVFPQ(quantizer, d, nlist, m, 8)
                 index = faiss.IndexPreTransform(opq, index_ivfpq)
             else:
                 index = faiss.IndexIVFPQ(quantizer, d, nlist, m, 8)
 
-            # Train & add
             if not index.is_trained:
                 index.train(X)
             index.add(X)
@@ -347,15 +349,136 @@ class RetrieverRegistry:
             warnings.warn(f"[nanopq] build failed: {e}")
             return None
 
-    # ---------------------
-    # NanoPQ search
-    # ---------------------
+    def _build_colbert(self) -> Optional[Built]:
+        cfg = self.cfg.get("colbert", {}) or {}
+        if not cfg.get("enabled", False):
+            return None
+        if RAGPretrainedModel is None:
+            warnings.warn("[colbert] RAGatouille not installed. `pip install ragatouille`")
+            return None
+        try:
+            texts = [(d.page_content or "") for d in self.documents]
+            model_id = cfg.get("model", "colbert-ir/colbertv2.0")
+            index_dir = Path(cfg.get("index_dir", "indexes/colbert"))
+            index_dir.mkdir(parents=True, exist_ok=True)
+            overwrite = bool(cfg.get("overwrite", False))
+
+            rag = RAGPretrainedModel.from_pretrained(model_id)
+            index_name = f"lme_{len(texts)}_{model_id.replace('/','_')}"
+            rag.index(
+                collection=texts,
+                index_name=index_name,
+                save_index_dir=str(index_dir),
+                overwrite=overwrite,
+            )
+
+            class _ColWrap:
+                def __init__(self, rag, n):
+                    self.rag = rag
+                    self.n = n
+                def search(self, q, k=5):
+                    hits = self.rag.search(q, k=k)
+                    out = []
+                    for i, h in enumerate(hits):
+                        if "doc_id" not in h:
+                            h["doc_id"] = h.get("document_id", h.get("pid", i)) % self.n
+                        out.append(h)
+                    return out
+
+            self._colbert = _ColWrap(rag, len(texts))
+            return Built("colbert", self._colbert, "colbert")
+        except Exception as e:
+            warnings.warn(f"[colbert] build failed: {e}")
+            return None
+
+    # ---------- LLM-based ----------
+    def _build_multiquery(self) -> Optional[Built]:
+        cfg = self.cfg.get("multiquery", {}) or {}
+        if not cfg.get("enabled", True):
+            return None
+        if MultiQueryRetriever is None:
+            warnings.warn("[multiquery] not available (missing package)")
+            return None
+        if self.llm is None:
+            warnings.warn("[multiquery] requires an LLM (pass llm=...)")
+            return None
+        base = self._ensure("faiss") or self._ensure("bm25")
+        if not base:
+            warnings.warn("[multiquery] needs a base retriever (faiss or bm25)")
+            return None
+        try:
+            base_ret = base.impl.as_retriever(search_kwargs={"k": self.k_default}) if base.name in ("faiss","knn") else base.impl
+            mq = MultiQueryRetriever.from_llm(retriever=base_ret, llm=self.llm)
+            self._multiquery = mq
+            return Built("multiquery", mq, "llm")
+        except Exception as e:
+            warnings.warn(f"[multiquery] build failed: {e}")
+            return None
+
+    def _build_contextual_compression(self) -> Optional[Built]:
+        cfg = self.cfg.get("contextual_compression", {}) or {}
+        if not cfg.get("enabled", True):
+            return None
+        if ContextualCompressionRetriever is None or LLMChainExtractor is None:
+            warnings.warn("[contextual_compression] not available (missing package)")
+            return None
+        if self.llm is None:
+            warnings.warn("[contextual_compression] requires an LLM (pass llm=...)")
+            return None
+        base = self._ensure("faiss") or self._ensure("bm25")
+        if not base:
+            warnings.warn("[contextual_compression] needs a base retriever (faiss or bm25)")
+            return None
+        try:
+            base_ret = base.impl.as_retriever(search_kwargs={"k": self.k_default}) if base.name in ("faiss","knn") else base.impl
+            compressor = LLMChainExtractor.from_llm(self.llm)
+            cc = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_ret)
+            self._compress = cc
+            return Built("contextual_compression", cc, "llm")
+        except Exception as e:
+            warnings.warn(f"[contextual_compression] build failed: {e}")
+            return None
+
+    def _build_self_query(self) -> Optional[Built]:
+        cfg = self.cfg.get("self_query", {}) or {}
+        if not cfg.get("enabled", True):
+            return None
+        if SelfQueryRetriever is None or AttributeInfo is None:
+            warnings.warn("[self_query] not available (missing package)")
+            return None
+        if self.llm is None:
+            warnings.warn("[self_query] requires an LLM (pass llm=...)")
+            return None
+        base = self._ensure("faiss")
+        if not base:
+            warnings.warn("[self_query] requires a vectorstore (faiss)")
+            return None
+        try:
+            metadata_field_info = [
+                AttributeInfo(name="speaker", description="Who spoke the turn", type="string"),
+                AttributeInfo(name="session_rank", description="Session index (S1,S2,...)", type="integer"),
+                AttributeInfo(name="dia_id", description="Dialogue turn ID like S3:5", type="string"),
+            ]
+            doc_desc = "Utterances from multi-session conversations (LongMemEval)"
+            sq = SelfQueryRetriever.from_llm(
+                llm=self.llm,
+                vectorstore=base.impl,
+                document_contents=doc_desc,
+                metadata_field_info=metadata_field_info,
+                verbose=False
+            )
+            self._selfquery = sq
+            return Built("self_query", sq, "llm")
+        except Exception as e:
+            warnings.warn(f"[self_query] build failed: {e}")
+            return None
+
+    # ---------- NanoPQ search ----------
     def _nanopq_search(self, npq_tuple, query: str, k: int) -> List[Document]:
         if faiss is None:
             return []
         index, X, id_map, emb = npq_tuple
         qv = _as_array(emb.embed_query(query))  # (1, d)
-        # IVF needs nprobe to control recall-speed tradeoff
         try:
             index.nprobe = min(32, index.nlist)  # type: ignore[attr-defined]
         except Exception:

@@ -2,13 +2,23 @@ data:
   json_path: "data/longmemeval_subset.json"
   sample_ids: null
   limit: null
-
-
+llm:
+  provider: google
+  model: gemini-2.5-flash
+  temperature: 0
 retrievers:
-  to_run: ["bm25","tfidf","faiss","svm","ensemble","time_weighted"]
+  to_run: ["bm25","tfidf","faiss","multiquery","contextual_compression","self_query"]
   top_k: 5
-  embedding_model: "sentence-transformers/all-mpnet-base-v2"
-  ensemble_weights: [0.75, 0.25]
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+#output:
+#  results_dir: "results_lme"
+
+
+#retrievers:
+#  to_run: ["bm25","tfidf","faiss","svm","ensemble","time_weighted", "multiquery", "contextual_compression", "self_query"]
+#  top_k: 5
+#  embedding_model: "sentence-transformers/all-mpnet-base-v2"
+#  ensemble_weights: [0.75, 0.25]
 
 output:
   results_dir: "./results_lme"
