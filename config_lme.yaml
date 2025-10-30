@@ -4,11 +4,12 @@ data:
   limit: null
 llm:
   provider: google
-  model: gemini-2.5-flash
+  model: gemini-2.5-flash-lite
   temperature: 0
 retrievers:
-  to_run: ["bm25","tfidf","faiss","multiquery","contextual_compression","self_query"]
-  top_k: 5
+  to_run: ["bm25","tfidf","faiss","knn","svm","time_weighted","nanopq","colbert",
+           "multiquery","contextual_compression","self_query"]
+  top_k: 20
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
 #output:
 #  results_dir: "results_lme"
